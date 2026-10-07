@@ -22,8 +22,8 @@ export async function matchProductsForList(
   const results: MatchedProduct[] = [];
 
   for (let i = 0; i < shoppingList.length; i++) {
-    // 5s between searches - safe, no rate limiting
-    if (i > 0) await new Promise(r => setTimeout(r, 5000));
+    // 20s between searches - ultra safe
+    if (i > 0) await new Promise(r => setTimeout(r, 20000));
 
     // If Kosik went down during this run, skip remaining
     if (!isKosikAvailable()) {

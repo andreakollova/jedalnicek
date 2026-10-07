@@ -58,8 +58,8 @@ export async function executeShoppingRun(plan: WeeklyPlan): Promise<void> {
           cartFailed++;
           logger.warn('Failed to add product', { productId: m.product.id, name: m.product.name });
         }
-        // 2s between cart adds
-        await new Promise(r => setTimeout(r, 2000));
+        // 10s between cart adds
+        await new Promise(r => setTimeout(r, 10000));
       }
 
       await closeBrowser();
