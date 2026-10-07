@@ -1,4 +1,4 @@
-import { searchProducts } from '../kosik/search.js';
+import { searchProducts, isKosikAvailable } from '../kosik/search.js';
 import { getProductMatches, upsertProductMatch } from '../db/shopping.js';
 import { logger } from '../utils/logger.js';
 import type { KosikProduct } from '../kosik/types.js';
@@ -22,7 +22,27 @@ export async function matchProductsForList(
   const results: MatchedProduct[] = [];
 
   for (let i = 0; i < shoppingList.length; i++) {
-    if (i > 0) await new Promise(r => setTimeout(r, 500));
+    // 5s between searches - safe, no rate limiting
+    if (i > 0) await new Promise(r => setTimeout(r, 5000));
+
+    // If Kosik went down during this run, skip remaining
+    if (!isKosikAvailable()) {
+      logger.warn('Kosik went down, skipping remaining items');
+      for (let j = i; j < shoppingList.length; j++) {
+        results.push({
+          ingredient_id: shoppingList[j].ingredient_id,
+          ingredient_name: shoppingList[j].ingredient_name,
+          required_quantity: shoppingList[j].total_quantity,
+          required_unit: shoppingList[j].unit,
+          product: null,
+          packages_needed: 0,
+          confidence: 'low',
+          is_substitution: false,
+        });
+      }
+      break;
+    }
+
     const match = await matchSingleIngredient(shoppingList[i]);
     results.push(match);
   }
