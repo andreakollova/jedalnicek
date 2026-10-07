@@ -1,0 +1,50 @@
+name: Scheduled Jobs
+
+on:
+  schedule:
+    # Monday 6:00 AM CET (4:00/5:00 UTC for DST)
+    - cron: '0 4,5 * * 1'
+    # Wednesday 6:00 AM CET
+    - cron: '0 4,5 * * 3'
+    # Friday 6:00 AM CET
+    - cron: '0 4,5 * * 5'
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job to run'
+        required: true
+        type: choice
+        options:
+          - prompt-monday
+          - prompt-wednesday
+          - prompt-friday
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine job
+        id: job
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            JOB="${{ github.event.inputs.job }}"
+          else
+            DAY_OF_WEEK=$(date -u +%u)
+            case $DAY_OF_WEEK in
+              1) JOB="prompt-monday" ;;
+              3) JOB="prompt-wednesday" ;;
+              5) JOB="prompt-friday" ;;
+              *) echo "No job for today"; exit 0 ;;
+            esac
+          fi
+          echo "job=$JOB" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger job
+        run: |
+          JOB="${{ steps.job.outputs.job }}"
+          DAY=$(echo "$JOB" | sed 's/prompt-//')
+
+          curl -f -X POST \
+            "${{ secrets.BACKEND_URL }}/api/jobs/prompt/${DAY}" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json"
