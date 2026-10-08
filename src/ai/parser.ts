@@ -1,6 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getEnv } from '../config/env.js';
-import { parsedMealPlanSchema, correctionsSchema, type ParsedMealPlanOutput } from './schemas.js';
+import { parsedMealPlanSchema, type ParsedMealPlanOutput } from './schemas.js';
 import { logger } from '../utils/logger.js';
 import type { Recipe } from '../types/index.js';
 
@@ -12,6 +12,19 @@ function getClient(): Anthropic {
   return _client;
 }
 
+// Strip markdown, prices, bullets, formatting from user message
+function cleanMessage(msg: string): string {
+  return msg
+    .replace(/\*\*[^*]*\*\*/g, '')       // remove **bold text** (prices like **1,20 €**)
+    .replace(/\*([^*]+)\*/g, '$1')        // *italic* -> just text
+    .replace(/^[\s]*[*\-•]\s*/gm, '')     // remove bullet points
+    .replace(/–\s*$/gm, '')               // remove trailing dashes
+    .replace(/\d+[,.]?\d*\s*€/g, '')      // remove prices like 1,20 €
+    .replace(/\(\s*\)/g, '')              // remove empty parens
+    .replace(/\n{3,}/g, '\n\n')           // collapse multiple newlines
+    .trim();
+}
+
 export async function parseMealPlanMessage(
   message: string,
   knownRecipes: Recipe[],
@@ -21,39 +34,54 @@ export async function parseMealPlanMessage(
     return `- ${r.name}${aliases} [default: ${r.default_portions} portions]`;
   }).join('\n');
 
-  const prompt = `Parse this grocery/meal message into JSON. Slovak context.
+  const cleaned = cleanMessage(message);
+  logger.info('Cleaned message for AI', { original: message.length, cleaned: cleaned.length });
+
+  const prompt = `You are a grocery list parser. Parse EVERY item in the list below into JSON.
 
 KNOWN RECIPES:
 ${recipeList}
 
 RULES:
-- If it matches a known recipe, put in "recipes" with the recipe name.
-- Everything else is an "extra" (individual grocery item).
-- "name" in extras = simple Slovak grocery name for searching on kosik.sk. NO quantities, NO units in the name. Just the product name.
+- EVERY line/item must appear in the output. Do NOT skip any items.
+- If it matches a known recipe, put in "recipes".
+- Everything else goes into "extras" as individual grocery items.
+- "name" = simple Slovak product name for searching kosik.sk. NO quantities, NO units, NO prices in name.
 - Quantities go in "quantity" field, units in "unit" field.
 - Valid units: ks, kg, g, l, ml, balenie
-- If user says "500g cibula", name="cibula", quantity=500, unit="g"
-- If user says "2x mineralna voda", name="mineralna voda", quantity=2, unit="ks"
-- If user says "vajcia", name="vajcia", quantity=1, unit="balenie"
-- If user says "jablka 800g", name="jablka", quantity=800, unit="g"
-- day_start/day_end: distribute recipes across monday-tuesday, wednesday-thursday, friday-sunday.
+- Examples:
+  "Ryžové krekry (2 balenia)" -> name="ryzove krekry", quantity=2, unit="balenie"
+  "Ryža dlhozrnná (1 kg)" -> name="ryza dlhozrnna", quantity=1, unit="kg"
+  "Červená šošovica (500 g)" -> name="cervena sosovica", quantity=500, unit="g"
+  "Vajcia čerstvé M/L (15 ks)" -> name="vajcia M/L", quantity=15, unit="ks"
+  "Mlieko plnotučné, 1ks" -> name="mlieko plnotucne", quantity=1, unit="ks"
+  "Celé kura (cca 1,8 kg)" -> name="cele kura", quantity=1, unit="ks"
+  "Mleté morčacie mäso (1 kg)" -> name="mlete morcacie maso", quantity=1, unit="kg"
+  "Slnečnicové semienka (100 g) + Vlašské orechy (100 g)" -> TWO items: semienka AND orechy
+- If one line contains multiple items separated by "+" or ",", split them into separate extras.
+- Ignore prices, euro signs, dashes.
+- day_start/day_end for recipes: monday-tuesday, wednesday-thursday, friday-sunday.
 
-USER MESSAGE:
-${message}
+GROCERY LIST:
+${cleaned}
 
-JSON only, no markdown:
+Return JSON with ALL items. Do not skip any:
 {
-  "recipes": [{ "name": "string", "portions": 2, "day_start": "monday", "day_end": "tuesday" }],
-  "extras": [{ "name": "string", "quantity": 1, "unit": "ks" }]
+  "recipes": [],
+  "extras": [
+    { "name": "product name", "quantity": 1, "unit": "ks" }
+  ]
 }`;
 
   const response = await getClient().messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2048,
+    max_tokens: 4096,
     messages: [{ role: 'user', content: prompt }],
   });
 
   const text = response.content[0].type === 'text' ? response.content[0].text : '';
+  logger.debug('AI raw response', { text: text.substring(0, 500) });
+
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) {
     logger.error('AI returned no JSON', { text });
@@ -61,68 +89,20 @@ JSON only, no markdown:
   }
 
   const parsed = JSON.parse(jsonMatch[0]);
+
+  logger.info('AI parsed result', {
+    recipes: parsed.recipes?.length ?? 0,
+    extras: parsed.extras?.length ?? 0,
+  });
+
   const validated = parsedMealPlanSchema.safeParse(parsed);
 
   if (!validated.success) {
     logger.error('AI output failed validation', {
       errors: validated.error.issues,
-      raw: parsed,
+      raw: JSON.stringify(parsed).substring(0, 500),
     });
     throw new Error(`AI output validation failed: ${validated.error.message}`);
-  }
-
-  return validated.data;
-}
-
-export async function parseCorrectionMessage(
-  message: string,
-  currentPlanSummary: string,
-  knownRecipes: Recipe[],
-): Promise<ReturnType<typeof correctionsSchema.parse>> {
-  const recipeList = knownRecipes.map(r => `- ${r.name}`).join('\n');
-
-  const prompt = `You are a meal planning assistant. The user wants to modify their existing weekly meal plan.
-
-CURRENT PLAN:
-${currentPlanSummary}
-
-KNOWN RECIPES:
-${recipeList}
-
-USER MESSAGE:
-${message}
-
-Parse the user's correction into structured actions. Respond with ONLY valid JSON:
-{
-  "corrections": [
-    {
-      "action": "add_recipe"|"remove_recipe"|"change_portions"|"add_extra"|"remove_extra"|"change_day"|"replace_recipe"|"cancel_day",
-      "target": "recipe or item name being modified",
-      "new_value": "new recipe name if replacing",
-      "portions": number,
-      "quantity": number,
-      "unit": "string",
-      "day": "monday"|"wednesday"|"friday"
-    }
-  ],
-  "understood": true|false,
-  "clarification_needed": "optional question if something is unclear"
-}`;
-
-  const response = await getClient().messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    messages: [{ role: 'user', content: prompt }],
-  });
-
-  const text = response.content[0].type === 'text' ? response.content[0].text : '';
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('AI correction parser returned no valid JSON');
-
-  const parsed = JSON.parse(jsonMatch[0]);
-  const validated = correctionsSchema.safeParse(parsed);
-  if (!validated.success) {
-    throw new Error(`Correction validation failed: ${validated.error.message}`);
   }
 
   return validated.data;
