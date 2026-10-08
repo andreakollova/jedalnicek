@@ -5,11 +5,11 @@ export function mergeIngredients(entries: ShoppingListEntry[]): ShoppingListEntr
   const merged = new Map<string, ShoppingListEntry>();
 
   for (const entry of entries) {
-    const key = entry.ingredient_id;
+    // Use ingredient_id if available, otherwise ingredient_name as key
+    const key = entry.ingredient_id || entry.ingredient_name.toLowerCase();
     const existing = merged.get(key);
 
     if (existing) {
-      // Normalize both to same unit before adding
       const norm1 = normalizeUnit(existing.total_quantity, existing.unit);
       const norm2 = normalizeUnit(entry.total_quantity, entry.unit);
 
@@ -17,7 +17,6 @@ export function mergeIngredients(entries: ShoppingListEntry[]): ShoppingListEntr
         existing.total_quantity = norm1.quantity + norm2.quantity;
         existing.unit = norm1.unit;
       } else {
-        // Different unit types, keep the larger quantity's unit
         existing.total_quantity += entry.total_quantity;
       }
 
