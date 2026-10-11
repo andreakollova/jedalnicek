@@ -69,7 +69,7 @@ async function matchSingleIngredient(entry: ShoppingListEntry): Promise<MatchedP
       if (stillAvailable) {
         const packagesNeeded = calculatePackages(
           entry.total_quantity, entry.unit,
-          stillAvailable.productQuantity.value, stillAvailable.productQuantity.unit,
+          stillAvailable.productQuantity?.value ?? 0, stillAvailable.productQuantity?.unit ?? 'ks',
         );
 
         await upsertProductMatch({
@@ -77,11 +77,11 @@ async function matchSingleIngredient(entry: ShoppingListEntry): Promise<MatchedP
           kosik_product_id: stillAvailable.id,
           product_name: stillAvailable.name,
           product_url: stillAvailable.url,
-          package_value: stillAvailable.productQuantity.value,
-          package_unit: stillAvailable.productQuantity.unit,
+          package_value: stillAvailable.productQuantity?.value ?? null,
+          package_unit: stillAvailable.productQuantity?.unit ?? null,
           last_price: stillAvailable.price,
-          last_unit_price: stillAvailable.pricePerUnit.price,
-          unit_price_unit: stillAvailable.pricePerUnit.unit,
+          last_unit_price: stillAvailable.pricePerUnit?.price ?? null,
+          unit_price_unit: stillAvailable.pricePerUnit?.unit ?? null,
           preferred: true,
           match_confidence: 'high',
         });
@@ -109,7 +109,9 @@ async function matchSingleIngredient(entry: ShoppingListEntry): Promise<MatchedP
   const reqNorm = normalizeToGrams(entry.total_quantity, entry.unit);
 
   const scored = products.map(p => {
-    const pkgNorm = normalizeToGrams(p.productQuantity.value, p.productQuantity.unit);
+    const pkgVal = p.productQuantity?.value ?? 0;
+    const pkgUnit = p.productQuantity?.unit ?? 'ks';
+    const pkgNorm = normalizeToGrams(pkgVal, pkgUnit);
     const packagesNeeded = (reqNorm.unit === pkgNorm.unit && pkgNorm.value > 0)
       ? Math.ceil(reqNorm.value / pkgNorm.value)
       : 1;
